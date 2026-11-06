@@ -214,8 +214,12 @@ const player = {
         return;
       }
       if (type === 'album') await spotify.playback.playAlbum(state.albums.get(id).uri);
-      else await spotify.playback.playTrack(state.tracks.get(trackId).uri);
-      setTimeout(refreshPlayer, 700);
+      else { const tr = state.tracks.get(trackId); await spotify.playback.playTrack(tr.uri, tr.albumUri); }
+      // Spotify can accept a play request (204) and still load nothing: say so.
+      setTimeout(async () => {
+        await refreshPlayer();
+        if (!nowPlaying) toast('Spotify accepted the request but did not start playback. Try again from the Spotify app.', 5000);
+      }, 1500);
     } catch (e) { playbackError(e); }
   },
   async toggle() {

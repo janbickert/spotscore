@@ -128,7 +128,9 @@ export async function api(path, { method = 'GET', body, onWait } = {}, attempt =
   }
   if (res.status === 204 || res.status === 202) return null;
   const text = await res.text();
-  const json = text ? JSON.parse(text) : null;
+  // Player commands may answer 200 with a plain-text body instead of JSON.
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch { json = null; }
   if (!res.ok) {
     const msg = json?.error?.message || res.statusText;
     const err = new Error(msg);
@@ -291,9 +293,14 @@ async function activeDeviceHint() {
 }
 
 export const playback = {
-  async playTrack(uri) {
+  // A song is always started inside its album (context + offset). Tested
+  // 2026-11-06: a bare { uris: [...] } request returns 204 but Spotify loads
+  // nothing and the current playback just ends; the album context works and
+  // also lets playback continue with the next track.
+  async playTrack(uri, albumUri) {
     const dev = await activeDeviceHint();
-    await api(`/me/player/play?device_id=${dev.id}`, { method: 'PUT', body: { uris: [uri] } });
+    const body = albumUri ? { context_uri: albumUri, offset: { uri } } : { uris: [uri] };
+    await api(`/me/player/play?device_id=${dev.id}`, { method: 'PUT', body });
   },
   async playAlbum(albumUri, trackUri) {
     const dev = await activeDeviceHint();
