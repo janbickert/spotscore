@@ -1,0 +1,4 @@
+# Local tooling and design working files, not part of the published app
+.claude/
+docs/
+*.zip

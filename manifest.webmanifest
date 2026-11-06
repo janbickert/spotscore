@@ -1,0 +1,19 @@
+{
+  "name": "SpotScore",
+  "short_name": "SpotScore",
+  "description": "Rate your Spotify liked songs and albums, derive artist scores, and compare them in head-to-heads and brackets.",
+  "author": "Jan Bickert",
+  "id": "./",
+  "start_url": "./#/library",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#14121c",
+  "theme_color": "#14121c",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
