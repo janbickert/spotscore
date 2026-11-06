@@ -288,7 +288,13 @@ export function deriveAlbumsAndArtists(tracks, state) {
 // ---------- Playback (needs Premium and Spotify open as the active device) ----------
 async function activeDeviceHint() {
   const devices = await api('/me/player/devices');
-  if (!devices?.devices?.length) throw new Error('No Spotify device found. Open the Spotify app on your phone first.');
+  // Spotify on Android leaves Spotify Connect when it is in the background and
+  // idle, so the list can be empty even though the app is installed.
+  if (!devices?.devices?.length) {
+    const err = new Error('No Spotify device found. Open the Spotify app on your phone first.');
+    err.noDevice = true;
+    throw err;
+  }
   return devices.devices.find(d => d.is_active) || devices.devices[0];
 }
 

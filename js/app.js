@@ -58,9 +58,13 @@ const DEFAULT_CLIENT_ID = 'a511f15bb84346ccaf4a4317b1285269'; // SpotScore app i
 const year = (d) => (d || '').slice(0, 4);
 
 let toastTimer;
-function toast(msg, ms = 2600) {
+// Optional action: { label, href } renders a tappable link (a real user tap,
+// which Android always allows to open another app).
+function toast(msg, ms = 2600, action = null) {
   const el = $('#toast');
   el.textContent = msg;
+  el.classList.toggle('has-action', !!action);
+  if (action) el.insertAdjacentHTML('beforeend', ` <a class="toast-action" href="${esc(action.href)}" target="_blank" rel="noopener">${esc(action.label)}</a>`);
   el.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), ms);
@@ -218,9 +222,12 @@ const player = {
       // Spotify can accept a play request (204) and still load nothing: say so.
       setTimeout(async () => {
         await refreshPlayer();
-        if (!nowPlaying) toast('Spotify accepted the request but did not start playback. Try again from the Spotify app.', 5000);
-      }, 1500);
-    } catch (e) { playbackError(e); }
+        if (!nowPlaying?.playing) openInSpotifyApp(type, id, 'Spotify did not start playback.');
+      }, 2000);
+    } catch (e) {
+      if (e.noDevice || e.status === 404) openInSpotifyApp(type, id);
+      else playbackError(e);
+    }
   },
   async toggle() {
     if (state.demoPlaying) { state.demoPlaying.playing = !state.demoPlaying.playing; drawPlayer(); return; }
@@ -243,10 +250,23 @@ const player = {
   },
 };
 
+// No Spotify device is available (Spotify closed or asleep in the background):
+// hand over to the Spotify app, as Spotify's guidelines ask. Opening it also
+// makes the phone a Spotify Connect device again for the next Play.
+function openInSpotifyApp(type, id, reason = 'Spotify is not active on your phone.') {
+  let path = `${type}/${id}`;
+  if (type === 'artist') {
+    const ar = state.artists.get(id);
+    const top = [...ar.trackIds].sort((a, b) => (scoring.trackScore(b) ?? 0) - (scoring.trackScore(a) ?? 0))[0];
+    if (top) path = `track/${top}`;
+  }
+  toast(reason, 8000, { label: 'Open in Spotify', href: `https://open.spotify.com/${path}` });
+}
+
 function playbackError(e) {
   if (e.quota) toast('Spotify request limit reached. Try again later.');
   else if (e.status === 403) toast('Playback needs Spotify Premium.');
-  else if (e.status === 404) toast('No active device. Open Spotify on your phone and start any song once.');
+  else if (e.noDevice || e.status === 404) toast('Spotify is not active. Open the Spotify app and play any song once.');
   else toast(e.message);
 }
 
