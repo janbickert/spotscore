@@ -54,6 +54,7 @@ const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math
 const plural = (n, w) => `${n.toLocaleString('en')} ${w}${n === 1 ? '' : 's'}`;
 const num = (n) => n.toLocaleString('en');
 const TYPE_LABEL = { track: 'Tracks', album: 'Albums', artist: 'Artists' };
+const DEFAULT_CLIENT_ID = 'a511f15bb84346ccaf4a4317b1285269'; // SpotScore app in the Spotify developer dashboard
 const year = (d) => (d || '').slice(0, 4);
 
 let toastTimer;
@@ -807,7 +808,8 @@ function renderRankings(tab) {
 
 async function renderSettings() {
   setTitle('Settings');
-  const clientId = (await db.getMeta('clientId')) || '';
+  // The Client ID is public by design (PKCE, no secret), so it is prefilled.
+  const clientId = (await db.getMeta('clientId')) || DEFAULT_CLIENT_ID;
   const token = await db.getMeta('token');
   const lastSync = await db.getMeta('lastSync');
   const rated = [...state.ratings.values()].filter(r => r.value != null).length;
