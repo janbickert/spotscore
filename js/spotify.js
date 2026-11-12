@@ -144,8 +144,10 @@ export async function api(path, { method = 'GET', body, onWait } = {}, attempt =
 // Liked songs come newest first. Incremental sync pages until it meets a track
 // already stored with the same addedAt. Artists are fetched one by one
 // (batch endpoints were removed), only those without cached genres.
+// Works on the raw records (state.rawTracks/rawAlbums/rawArtists); the caller
+// rebuilds the merged editions view afterwards.
 export async function syncLibrary(state, { full = false, onProgress = () => {} } = {}) {
-  const known = new Map([...state.tracks.values()].map(t => [t.id, t.addedAt]));
+  const known = new Map([...state.rawTracks.values()].map(t => [t.id, t.addedAt]));
   const seen = new Set();
   const newTracks = [];
   let url = '/me/tracks?limit=50';
@@ -167,16 +169,16 @@ export async function syncLibrary(state, { full = false, onProgress = () => {} }
   }
 
   const t0 = now();
-  const tracks = new Map(state.tracks);
+  const tracks = new Map(state.rawTracks);
   for (const t of newTracks) tracks.set(t.id, { ...(tracks.get(t.id) || {}), ...t, updatedAt: t0, createdAt: tracks.get(t.id)?.createdAt || t0 });
   // A full sync also detects unliked songs; ratings of removed tracks stay stored.
   if (full) for (const id of [...tracks.keys()]) if (!seen.has(id)) tracks.delete(id);
 
-  const { albums, artists } = deriveAlbumsAndArtists(tracks, state);
+  const { albums, artists } = deriveAlbumsAndArtists(tracks, { albums: state.rawAlbums, artists: state.rawArtists });
   await db.clear('tracks'); await db.putMany('tracks', [...tracks.values()]);
   await db.clear('albums'); await db.putMany('albums', [...albums.values()]);
   await db.putMany('artists', [...artists.values()]);
-  state.tracks = tracks; state.albums = albums; state.artists = artists;
+  state.rawTracks = tracks; state.rawAlbums = albums; state.rawArtists = artists;
   await db.setMeta('lastSync', now());
   return { added: newTracks.length, total: tracks.size };
 }
@@ -213,7 +215,11 @@ export function syncGenres(state, { onProgress = () => {}, force = false } = {})
         const current = state.artists.get(a.id) || a;
         const updated = { ...current, genres: info.genres || [], image: info.images?.[info.images.length - 1]?.url || current.image, genresFetchedAt: now(), updatedAt: now() };
         state.artists.set(a.id, updated);
-        await db.put('artists', updated);
+        // Keep the raw record in step, so a rebuild of the merged view keeps the genres.
+        const raw = state.rawArtists?.get(a.id);
+        const rawUpdated = raw ? { ...raw, genres: updated.genres, image: updated.image, genresFetchedAt: updated.genresFetchedAt, updatedAt: updated.updatedAt } : updated;
+        state.rawArtists?.set(a.id, rawUpdated);
+        await db.put('artists', rawUpdated);
         await db.setMeta('genrePauseStep', 0);
       } catch (e) {
         if (e.quota) {

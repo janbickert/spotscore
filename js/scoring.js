@@ -18,9 +18,18 @@ export function clampRating(v) {
 const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
 
 export function createScoring(state) {
+  // A merged album or song can carry ratings under any of its editions or
+  // versions (for example rated before merging existed). The most recent
+  // rating record wins; a newer cleared rating (null) wins too.
+  const members = (type, id) => (type === 'track' ? state.trackMembers?.get(id)
+    : type === 'album' ? state.albumMembers?.get(id) : null) || [id];
   const rating = (type, id) => {
-    const r = state.ratings.get(ratingKey(type, id));
-    return r && r.value != null ? r.value : null;
+    let best = null;
+    for (const m of members(type, id)) {
+      const r = state.ratings.get(ratingKey(type, m));
+      if (r && (!best || (r.updatedAt || 0) > (best.updatedAt || 0))) best = r;
+    }
+    return best && best.value != null ? best.value : null;
   };
 
   const albumTrackAvg = (albumId) => {

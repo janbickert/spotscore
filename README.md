@@ -69,6 +69,18 @@ Open http://127.0.0.1:5173 and choose **Try with a demo library** (about 300 fic
 | `js/ui.js` | Design components: number pills, wedge rating slider, swipe-to-rate rows, podium |
 | `icons/spotify/` | Official Spotify full logo (white RGB, unmodified, from the Design & Branding Guidelines) and its icon, used for attribution |
 
+## Editions and versions (`js/versions.js`)
+
+Remastered, deluxe, expanded, regional and other editions of an album count as one album with one rating; a song liked in several versions counts as one song. Spotify's raw records stay unchanged in IndexedDB, and the merged view is rebuilt on every load and sync.
+
+- Same album: same main artist and same title once edition notes (Remastered, Deluxe, Expanded, Anniversary, Bonus, Edition, Mono, Stereo, ...) are ignored. Live, Acoustic, Demo, Remix, Single Version and "Taylor's Version" stay separate.
+- Same song: same main artist, same title by the same rule, and a length within 10 seconds.
+- The edition with the most liked songs (then the oldest) represents the album, with its real Spotify title.
+- Ratings stored on any edition count; the most recent one wins.
+- "Not the same album" on the album page splits an edition off (stored in `meta.versionOverrides`, included in exports).
+- The mini player rates the liked version of the playing song, also when Spotify plays a different version.
+- On the 2026-11-06 library: 3,535 albums became 3,362, and 4,809 songs became 4,676.
+
 ## Spotify Design & Branding Guidelines
 
 Checked against developer.spotify.com/documentation/design on 2026-11-06:

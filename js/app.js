@@ -6,10 +6,16 @@ import { createElo } from './elo.js';
 import * as spotify from './spotify.js';
 import { buildDemo } from './demo.js';
 import { esc, fmtCalc, ratingPill, calcPill, eloText, changeText, wedge, wedgePanel, enableSwipeRate, podium } from './ui.js';
+import { buildVersions } from './versions.js';
 
 // ---------- State ----------
+// raw*: records exactly as synced from Spotify (stored in IndexedDB).
+// tracks/albums/artists: merged view where editions and versions are one item.
 const state = {
+  rawTracks: new Map(), rawAlbums: new Map(), rawArtists: new Map(),
   tracks: new Map(), albums: new Map(), artists: new Map(),
+  trackMembers: new Map(), albumMembers: new Map(), resolvePlaying: () => null,
+  overrides: { splitAlbums: [] },
   ratings: new Map(), elo: new Map(), suggestions: new Map(),
   bracket: null, mode: null, connected: false, h2h: null,
   demoPlaying: null, syncing: null, genreProgress: null,
@@ -23,12 +29,31 @@ async function loadState() {
   const [tracks, albums, artists, ratings, eloRows, sugs, brackets] = await Promise.all(
     ['tracks', 'albums', 'artists', 'ratings', 'elo', 'suggestions', 'brackets'].map(s => db.all(s)));
   Object.assign(state, {
-    tracks: toMap(tracks), albums: toMap(albums), artists: toMap(artists),
+    rawTracks: toMap(tracks), rawAlbums: toMap(albums), rawArtists: toMap(artists),
     ratings: toMap(ratings), elo: toMap(eloRows), suggestions: toMap(sugs),
     bracket: brackets.sort((a, b) => b.updatedAt - a.updatedAt)[0] || null,
     mode: await db.getMeta('mode'),
     connected: await spotify.isConnected(),
+    overrides: (await db.getMeta('versionOverrides')) || { splitAlbums: [] },
   });
+  applyVersions();
+}
+
+// Rebuilds the merged view (editions as one album, versions as one song).
+function applyVersions() {
+  const v = buildVersions(state.rawTracks, state.rawAlbums, state.rawArtists, state.overrides);
+  Object.assign(state, {
+    tracks: v.tracks, albums: v.albums, artists: v.artists,
+    trackMembers: v.trackMembers, albumMembers: v.albumMembers, resolvePlaying: v.resolvePlaying,
+  });
+}
+
+// "Not the same album": splits one edition off its group for good.
+async function splitEdition(albumId) {
+  const splitAlbums = [...new Set([...(state.overrides.splitAlbums || []), albumId])];
+  state.overrides = { ...state.overrides, splitAlbums, updatedAt: now() };
+  await db.setMeta('versionOverrides', state.overrides);
+  applyVersions();
 }
 
 async function setRating(type, refId, value, { quiet = false } = {}) {
@@ -105,7 +130,8 @@ function describe(type, id) {
     const a = state.albums.get(id);
     if (!a) return null;
     const avg = scoring.albumTrackAvg(id);
-    return { title: a.name, sub: `${a.artists.map(x => x.name).join(', ')} · ${year(a.releaseDate)}${avg != null ? ` · ø${fmtCalc(avg)}` : ''}`, art: (s) => art(a, s), href: `#/album/${id}` };
+    const eds = a.editions?.length > 1 ? ` · ${a.editions.length} editions` : '';
+    return { title: a.name, sub: `${a.artists.map(x => x.name).join(', ')} · ${year(a.releaseDate)}${eds}${avg != null ? ` · ø${fmtCalc(avg)}` : ''}`, art: (s) => art(a, s), href: `#/album/${id}` };
   }
   const ar = state.artists.get(id);
   return ar && { title: ar.name, sub: `${ar.genres.length ? ar.genres.slice(0, 2).join(', ') : 'No genres yet'} · ${plural(ar.trackIds.length, 'track')}`, art: (s) => art(ar, s, true), href: `#/artist/${id}` };
@@ -275,7 +301,11 @@ async function refreshPlayer() {
   if (state.mode !== 'spotify' || !state.connected || document.hidden) return;
   try {
     const s = await spotify.playback.state();
-    nowPlaying = s?.item ? { name: s.item.name, artist: s.item.artists.map(a => a.name).join(', '), id: s.item.id, playing: s.is_playing, image: s.item.album.images?.at(-1)?.url } : null;
+    nowPlaying = s?.item ? {
+      name: s.item.name, artist: s.item.artists.map(a => a.name).join(', '), id: s.item.id,
+      artistId: s.item.artists[0]?.id, durationMs: s.item.duration_ms,
+      playing: s.is_playing, image: s.item.album?.images?.at(-1)?.url,
+    } : null;
   } catch { nowPlaying = null; }
   drawPlayer();
 }
@@ -290,12 +320,17 @@ function drawPlayer() {
   if (!np) { bar.hidden = true; document.body.classList.remove('has-player'); return; }
   bar.hidden = false;
   document.body.classList.add('has-player');
-  const t = state.tracks.get(np.id);
+  // The playing version may differ from the liked one (remaster, deluxe,
+  // another release): rate the liked version of the same song.
+  const libId = np.demo ? np.id : state.resolvePlaying(np);
+  const t = libId ? state.tracks.get(libId) : null;
+  // Cover and title always show what is actually playing.
+  const cover = np.image ? `<img class="art sm" src="${esc(np.image)}" alt="">` : t ? art(t, 'sm') : '';
   bar.innerHTML = `
-    <a class="np" href="${t ? `#/track/${np.id}` : '#/library'}">${t ? art(t, 'sm') : np.image ? `<img class="art sm" src="${esc(np.image)}" alt="">` : ''}
+    <a class="np" href="${t ? `#/track/${libId}` : '#/library'}">${cover}
       <span class="meta"><span class="t">${esc(np.name)}</span><span class="s">${esc(np.artist)}${np.demo ? ' · demo' : ''}</span></span></a>
     ${np.demo ? '' : spotifyIcon()}
-    ${t ? ratingPill(scoring.trackScore(np.id), { size: 'sm', rateRef: `track:${np.id}`, compact: true }) : ''}
+    ${t ? ratingPill(scoring.trackScore(libId), { size: 'sm', rateRef: `track:${libId}`, compact: true }) : ''}
     <button class="icon-btn" data-player="toggle" aria-label="${np.playing ? 'Pause' : 'Play'}">${np.playing ? '❚❚' : '▶'}</button>
     <button class="icon-btn" data-player="next" aria-label="Skip">⏭</button>`;
 }
@@ -435,11 +470,25 @@ function renderTrack(id) {
       <div class="panel"><span class="label">Your rating</span><span id="ratingPill">${ratingPill(scoring.trackScore(id), { size: 'lg' })}</span></div>
       <div class="panel"><span class="label">Duels</span>${eloText(e)}<span class="fine">Liked ${new Date(t.addedAt).toLocaleDateString()}</span></div>
     </div>
-    <div id="slider"></div>`;
+    <div id="slider"></div>
+    ${t.versions?.length > 1 ? `<p class="fine">Liked in ${t.versions.length} versions, one rating for all: ${t.versions.map(v => esc(state.rawTracks.get(v)?.albumName || '')).join(' · ')}</p>` : ''}`;
   $('#slider').append(wedgePanel('Rate track · drag or tap', scoring.trackScore(id), async v => {
     await setRating('track', id, v);
     $('#ratingPill').innerHTML = ratingPill(v, { size: 'lg' });
   }));
+}
+
+// Lists all editions merged into this album. The first one represents the group.
+function editionsSection(a) {
+  if (!a.editions || a.editions.length < 2) return '';
+  return `
+    <p class="label section-label">${a.editions.length} editions in your library · one rating for all</p>
+    <div class="list">${a.editions.map((eid, i) => {
+      const e = state.rawAlbums.get(eid);
+      return `<div class="row compact edition">${art(e, 'sm')}
+        <span class="meta"><span class="t">${esc(e.name)}</span><span class="s">${year(e.releaseDate)} · ${plural(e.trackIds.length, 'liked song')}${i === 0 ? ' · shown' : ''}</span></span>
+        ${i === 0 ? '' : `<button class="btn small" data-split="${eid}">Not the same album</button>`}</div>`;
+    }).join('')}</div>`;
 }
 
 function renderAlbum(id) {
@@ -465,10 +514,18 @@ function renderAlbum(id) {
       return `<div class="trow" data-tid="${t}"><div class="row compact"><span class="rank">${tr.trackNumber || ''}</span>
         <a class="meta" href="#/track/${t}"><span class="t">${esc(tr.name)}</span></a>
         <span class="pillslot" role="button" tabindex="0" data-inline="${t}" aria-label="Rate ${esc(tr.name)}">${ratingPill(scoring.trackScore(t), { size: 'sm', compact: true })}</span></div></div>`;
-    }).join('')}</div>`;
+    }).join('')}</div>
+    ${editionsSection(a)}`;
   $('#slider').append(wedgePanel('Rate album · drag or tap', scoring.albumScore(id), async v => {
     await setRating('album', id, v);
     $('#ratingPill').innerHTML = ratingPill(v, { size: 'lg' });
+  }));
+  $$('[data-split]', view).forEach(btn => btn.addEventListener('click', async () => {
+    const edition = state.rawAlbums.get(btn.dataset.split);
+    if (!confirm(`Treat "${edition.name}" (${year(edition.releaseDate)}) as a separate album? It then gets its own rating.`)) return;
+    await splitEdition(btn.dataset.split);
+    toast(`"${edition.name}" is now a separate album`);
+    route();
   }));
   // Tapping a track's pill opens an inline slider under the row.
   const openInline = (tid) => {
@@ -851,6 +908,7 @@ async function renderSettings() {
     <section class="card">
       <h3>Library</h3>
       <p>${plural(state.tracks.size, 'track')} · ${plural(state.albums.size, 'album')} · ${plural(state.artists.size, 'artist')} · ${num(rated)} ratings</p>
+      ${state.rawAlbums.size > state.albums.size || state.rawTracks.size > state.tracks.size ? `<p class="fine">Merged: ${num(state.rawAlbums.size - state.albums.size)} extra album editions and ${num(state.rawTracks.size - state.tracks.size)} extra song versions share one rating with another edition. Split a wrong match on the album page.</p>` : ''}
       <p class="fine">${lastSync ? `Last sync ${new Date(lastSync).toLocaleString()}` : 'Not synced yet'}</p>
       <div id="syncProgress" class="sync" hidden><div class="progress"><div></div></div><p class="fine"></p></div>
       <div class="row-actions"><button class="btn" id="fullSync" ${state.connected ? '' : 'disabled'}>Full resync</button><button class="btn primary" id="sync" ${state.connected ? '' : 'disabled'}>Sync new likes</button></div>
@@ -923,6 +981,7 @@ async function runSync(full) {
     await db.setMeta('mode', 'spotify');
     state.mode = 'spotify';
     const res = await spotify.syncLibrary(state, { full, onProgress: (p) => { state.syncing = p; showSyncProgress(p); } });
+    applyVersions();
     toast(`Sync done: ${plural(res.added, 'new or changed track')}, ${res.total} total`);
   } catch (e) {
     toast(e.quota ? 'Spotify request limit reached. Try the sync again later.' : `Sync stopped: ${e.message}`, 5000);
@@ -978,6 +1037,7 @@ async function loadDemo() {
 async function exportJson() {
   const data = { app: 'spotscore', version: 1, exportedAt: new Date().toISOString() };
   for (const s of STORES.filter(x => x !== 'meta')) data[s] = await db.all(s);
+  data.versionOverrides = state.overrides;
   const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -999,6 +1059,11 @@ async function importJson(file) {
       changed += newer.length;
     }
     if (!state.mode && data.tracks?.length) await db.setMeta('mode', 'spotify');
+    // Split editions: keep both sides' splits.
+    if (data.versionOverrides?.splitAlbums?.length) {
+      const splitAlbums = [...new Set([...(state.overrides.splitAlbums || []), ...data.versionOverrides.splitAlbums])];
+      await db.setMeta('versionOverrides', { ...state.overrides, splitAlbums, updatedAt: now() });
+    }
     await loadState();
     updateBadge();
     toast(`Import done: ${changed} records added or updated`);

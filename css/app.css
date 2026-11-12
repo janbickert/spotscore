@@ -185,6 +185,9 @@ select.chip { width: auto; max-width: 118px; flex: none; appearance: none; -webk
 .meta .t { font-size: 15px; font-weight: 600; }
 .ranked .meta .t { font-size: 14px; font-weight: 700; }
 .meta .s { color: var(--text-2); font-size: 12px; }
+.row.edition { flex-wrap: wrap; row-gap: 6px; }
+.row.edition .meta { flex: 1 1 calc(100% - 64px); }
+.row.edition .btn { margin-left: 64px; }
 .rank { width: 22px; text-align: center; color: var(--text-2); font-weight: 700; font-variant-numeric: tabular-nums; flex: none; }
 .sentinel { height: 1px; }
 

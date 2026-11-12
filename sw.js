@@ -1,10 +1,10 @@
 // Service worker: network first for the app shell (so updates arrive at once),
 // cached copy when offline. Spotify API and image calls are never cached here.
 
-const CACHE = 'spotscore-v5';
+const CACHE = 'spotscore-v6';
 const SHELL = [
   './', './index.html', './css/app.css', './manifest.webmanifest',
-  './js/app.js', './js/ui.js', './js/db.js', './js/scoring.js', './js/elo.js', './js/spotify.js', './js/demo.js',
+  './js/app.js', './js/ui.js', './js/versions.js', './js/db.js', './js/scoring.js', './js/elo.js', './js/spotify.js', './js/demo.js',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png',
   './icons/spotify/Spotify_Full_Logo_White_RGB.svg', './icons/spotify/Spotify_Icon_White_RGB.svg',
 ];
