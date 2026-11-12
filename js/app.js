@@ -1,12 +1,13 @@
 // SpotScore app shell: state, router, screens ("Malachite" design, handoff 3a).
 
-import { db, now, STORES } from './db.js';
+import { db, now, BACKUP_STORES } from './db.js';
 import { createScoring, ratingKey, fmt } from './scoring.js';
 import { createElo } from './elo.js';
 import * as spotify from './spotify.js';
 import { buildDemo } from './demo.js';
 import { esc, fmtCalc, ratingPill, calcPill, eloText, changeText, wedge, wedgePanel, enableSwipeRate, podium } from './ui.js';
 import { buildVersions } from './versions.js';
+import { createSocial } from './social.js';
 
 // ---------- State ----------
 // raw*: records exactly as synced from Spotify (stored in IndexedDB).
@@ -14,8 +15,9 @@ import { buildVersions } from './versions.js';
 const state = {
   rawTracks: new Map(), rawAlbums: new Map(), rawArtists: new Map(),
   tracks: new Map(), albums: new Map(), artists: new Map(),
-  trackMembers: new Map(), albumMembers: new Map(), resolvePlaying: () => null,
+  trackMembers: new Map(), albumMembers: new Map(), resolvePlaying: () => null, resolveAlbum: () => null,
   overrides: { splitAlbums: [] },
+  cloud: { user: null, profile: null, friend: null, others: [], status: null },
   ratings: new Map(), elo: new Map(), suggestions: new Map(),
   bracket: null, mode: null, connected: false, h2h: null,
   demoPlaying: null, syncing: null, genreProgress: null,
@@ -44,7 +46,7 @@ function applyVersions() {
   const v = buildVersions(state.rawTracks, state.rawAlbums, state.rawArtists, state.overrides);
   Object.assign(state, {
     tracks: v.tracks, albums: v.albums, artists: v.artists,
-    trackMembers: v.trackMembers, albumMembers: v.albumMembers, resolvePlaying: v.resolvePlaying,
+    trackMembers: v.trackMembers, albumMembers: v.albumMembers, resolvePlaying: v.resolvePlaying, resolveAlbum: v.resolveAlbum,
   });
 }
 
@@ -54,6 +56,7 @@ async function splitEdition(albumId) {
   state.overrides = { ...state.overrides, splitAlbums, updatedAt: now() };
   await db.setMeta('versionOverrides', state.overrides);
   applyVersions();
+  markDirty();
 }
 
 async function setRating(type, refId, value, { quiet = false } = {}) {
@@ -67,6 +70,7 @@ async function setRating(type, refId, value, { quiet = false } = {}) {
   updateBadge();
   drawPlayer();
   if (!quiet) toast(value == null ? 'Rating cleared' : `Saved ${fmt(value)}`, 1400);
+  markDirty();
 }
 
 // ---------- Helpers ----------
@@ -348,6 +352,9 @@ const routes = [
   [/^#\/bracket$/, renderBracket],
   [/^#\/suggestions$/, renderSuggestions],
   [/^#\/rankings(?:\/(tracks|albums|artists|artist-duels))?$/, m => renderRankings(m[1] || 'tracks')],
+  [/^#\/friend(?:\/(tracks|albums|artists|artist-duels))?$/, m => social.renderFriendRankings(m[1] || 'tracks')],
+  [/^#\/compare(?:\/(all|tracks|albums))?$/, m => social.renderCompare(m[1] || 'all')],
+  [/^#\/shared\/([0-9a-f-]+)$/, m => social.renderShared(m[1])],
   [/^#\/settings$/, renderSettings],
 ];
 
@@ -362,13 +369,13 @@ function route() {
   view.innerHTML = '';
   if (!match) { location.replace('#/library'); return; }
   const [m, fn] = match;
-  const isDetail = /^#\/(track|album|artist|suggestions)\b/.test(h);
+  const isDetail = /^#\/(track|album|artist|suggestions|shared)\b/.test(h);
   document.body.classList.toggle('detail', isDetail);
   view.classList.toggle('wash', /^#\/(track|album|artist)\//.test(h));
   $('#back').hidden = !isDetail;
   fn(m);
   const tab = h.split('/')[1];
-  const tabFor = { track: 'library', album: 'library', artist: 'library', h2h: 'duel', bracket: 'duel', suggestions: 'duel' }[tab] || tab;
+  const tabFor = { track: 'library', album: 'library', artist: 'library', h2h: 'duel', bracket: 'duel', suggestions: 'duel', shared: 'duel', friend: 'rankings', compare: 'rankings' }[tab] || tab;
   $$('.tabbar a').forEach(a => { const on = a.dataset.tab === tabFor; a.classList.toggle('active', on); a.toggleAttribute('aria-current', on); });
   if (!sameView) window.scrollTo(0, ui.scroll.get(h) || 0);
 }
@@ -468,6 +475,7 @@ function renderTrack(id) {
       info: `Track · <a href="#/album/${t.albumId}">${esc(t.albumName)}</a> · ${year(t.albumReleaseDate)}` })}
     <div class="panels">
       <div class="panel"><span class="label">Your rating</span><span id="ratingPill">${ratingPill(scoring.trackScore(id), { size: 'lg' })}</span></div>
+      ${social.friendPanel('track', id)}
       <div class="panel"><span class="label">Duels</span>${eloText(e)}<span class="fine">Liked ${new Date(t.addedAt).toLocaleDateString()}</span></div>
     </div>
     <div id="slider"></div>
@@ -506,6 +514,7 @@ function renderAlbum(id) {
     <div class="panels">
       <div class="panel"><span class="label">Your rating</span><span id="ratingPill">${ratingPill(scoring.albumScore(id), { size: 'lg' })}</span></div>
       <div class="panel" id="avgPanel">${avgPanel()}</div>
+      ${social.friendPanel('album', id)}
     </div>
     <div id="slider"></div>
     <p class="label section-label">Liked tracks</p>
@@ -560,6 +569,7 @@ function renderArtist(id) {
     <div class="panels">
       <div class="panel"><span class="label">Artist score</span>${calcPill(b.score, { size: 'lg' })}</div>
       <div class="panel"><span class="label">Duel ranking</span><b>${pos >= 0 ? `#${pos + 1} of ${ranking.length}` : 'No duels yet'}</b>${pos >= 0 ? eloText(ranking[pos]) : ''}</div>
+      ${social.friendPanel('artist', id)}
       <div class="panel"><span class="label">Album average · ${b.albumCount} rated${b.weights ? ` · ${b.weights[0]}%` : ''}</span>${calcPill(b.albumAvg)}</div>
       <div class="panel"><span class="label">Track average · ${b.trackCount} rated${b.weights ? ` · ${b.weights[1]}%` : ''}</span>${calcPill(b.trackAvg)}</div>
     </div>
@@ -633,6 +643,7 @@ function renderDuel() {
     ${head('Duel', { attrib: false })}
     ${n ? `<a class="card notice" href="#/suggestions"><b>${plural(n, 'rating suggestion')}</b><span>Review the changes your duels suggest</span><span class="arrow">›</span></a>` : ''}
     ${b && !b.done ? `<a class="card notice" href="#/bracket"><b>Resume bracket</b><span>${TYPE_LABEL[b.type]} · ${b.size} · ${esc(b.poolLabel)} · ${roundName(b.rounds[b.current.r].length)}</span><span class="arrow">›</span></a>` : ''}
+    ${social.sharedHubCard()}
     <section class="card">
       <h3>Head-to-head</h3>
       <p class="fine">Endless pairs of close matches. Each pick updates Elo.</p>
@@ -665,6 +676,7 @@ function renderDuel() {
   $('#hGenre').onchange = info;
   $('#bGenre').onchange = info;
   info();
+  social.bindSharedHub();
   $('#hStart').onclick = () => {
     const type = readSeg('hType');
     const genre = $('#hGenre').value;
@@ -704,7 +716,7 @@ function duelCard(type, id) {
 // Attaches pick handlers to duel cards; the play button never counts as a pick.
 function bindPicks(onPick) {
   $$('[data-pick]').forEach(card => {
-    const pick = (e) => { if (e.target.closest('[data-play]')) return; onPick(card.dataset.pick); };
+    const pick = async (e) => { if (e.target.closest('[data-play]')) return; await onPick(card.dataset.pick); markDirty(); };
     card.addEventListener('click', pick);
     card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(e); } });
   });
@@ -847,11 +859,11 @@ function renderSuggestions() {
     }).join('')}</div>`;
   $$('.sug').forEach(el => {
     const id = el.dataset.id;
-    $('[data-accept]', el).onclick = async () => { await elo.accept(id, (t, r, v) => setRating(t, r, v)); updateBadge(); route(); };
-    $('[data-reject]', el).onclick = async () => { await elo.reject(id); updateBadge(); route(); };
+    $('[data-accept]', el).onclick = async () => { await elo.accept(id, (t, r, v) => setRating(t, r, v)); updateBadge(); markDirty(); route(); };
+    $('[data-reject]', el).onclick = async () => { await elo.reject(id); updateBadge(); markDirty(); route(); };
   });
-  $('#acceptAll').onclick = async () => { for (const s of list) await elo.accept(s.id, (t, r, v) => setRating(t, r, v, { quiet: true })); updateBadge(); toast(`${plural(list.length, 'rating')} updated`); route(); };
-  $('#rejectAll').onclick = async () => { for (const s of list) await elo.reject(s.id); updateBadge(); route(); };
+  $('#acceptAll').onclick = async () => { for (const s of list) await elo.accept(s.id, (t, r, v) => setRating(t, r, v, { quiet: true })); updateBadge(); toast(`${plural(list.length, 'rating')} updated`); markDirty(); route(); };
+  $('#rejectAll').onclick = async () => { for (const s of list) await elo.reject(s.id); updateBadge(); markDirty(); route(); };
 }
 
 function artistEloRanking() {
@@ -880,6 +892,7 @@ function renderRankings(tab) {
   });
   view.innerHTML = `
     ${head('Rankings', { sub })}
+    ${social.whoPills('me')}
     <nav class="pills" aria-label="Ranking type">${[['tracks', 'Tracks'], ['albums', 'Albums'], ['artists', 'Artists'], ['artist-duels', 'Duels']].map(([k, l]) => `<a href="#/rankings/${k}" class="${k === tab ? 'on' : ''}" ${k === tab ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>
     ${top.length ? podium(top) : ''}
     ${note ? `<p class="fine">${note}</p>` : ''}
@@ -915,6 +928,7 @@ async function renderSettings() {
       ${state.mode === 'spotify' ? '<div id="genreStatus" class="sync"></div>' : ''}
       <p class="fine">Genres need one request per artist. They load slowly in the background while the app is open, artists with the most liked songs first, and pause when Spotify's request limit is reached.</p>
     </section>
+    ${cloudCard()}
     <section class="card">
       <h3>Backup</h3>
       <p class="fine">Export ratings, duel data and library as JSON. Import merges by timestamp, newer entries win.</p>
@@ -952,6 +966,7 @@ async function renderSettings() {
   };
   if (state.syncing) showSyncProgress(state.syncing);
   drawGenreStatus();
+  bindCloudCard();
 }
 
 function showSyncProgress(p) {
@@ -989,12 +1004,30 @@ async function runSync(full) {
     state.syncing = null;
     route();
   }
+  cloudSync();
   loadGenres();
 }
 
 // Genres load as a slow background trickle and pause when Spotify's quota is used up.
 async function loadGenres(force = false) {
   if (state.mode !== 'spotify' || !state.connected) return;
+  // First take genres the friend's app already fetched (shared catalog), once per session.
+  if (state.cloud.user && !state.cloud.genresChecked) {
+    state.cloud.genresChecked = true;
+    try {
+      const missing = [...state.rawArtists.values()].filter(a => !a.genresFetchedAt).map(a => a.id);
+      const known = missing.length ? await (await getCloud()).knownGenres(missing) : [];
+      const updated = [];
+      for (const k of known) {
+        const raw = state.rawArtists.get(k.id);
+        if (!raw) continue;
+        const u = { ...raw, genres: k.genres || [], image: k.image || raw.image, genresFetchedAt: k.genresFetchedAt, updatedAt: now() };
+        state.rawArtists.set(k.id, u);
+        updated.push(u);
+      }
+      if (updated.length) { await db.putMany('artists', updated); applyVersions(); drawGenreStatus(); }
+    } catch { /* offline: fall back to Spotify */ }
+  }
   try {
     const res = await spotify.syncGenres(state, { force, onProgress: (p) => { state.genreProgress = p; drawGenreStatus(); } });
     if (res.paused && force) toast('Spotify request limit reached. Genres resume automatically later.', 5000);
@@ -1036,7 +1069,7 @@ async function loadDemo() {
 
 async function exportJson() {
   const data = { app: 'spotscore', version: 1, exportedAt: new Date().toISOString() };
-  for (const s of STORES.filter(x => x !== 'meta')) data[s] = await db.all(s);
+  for (const s of BACKUP_STORES) data[s] = await db.all(s);
   data.versionOverrides = state.overrides;
   const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
   const a = document.createElement('a');
@@ -1051,7 +1084,7 @@ async function importJson(file) {
     const data = JSON.parse(await file.text());
     if (data.app !== 'spotscore') throw new Error('Not a SpotScore backup');
     let changed = 0;
-    for (const s of STORES.filter(x => x !== 'meta')) {
+    for (const s of BACKUP_STORES) {
       if (!Array.isArray(data[s])) continue;
       const existing = toMap(await db.all(s));
       const newer = data[s].filter(r => r && r.id && (!existing.has(r.id) || (r.updatedAt || 0) > (existing.get(r.id).updatedAt || 0)));
@@ -1073,6 +1106,165 @@ async function importJson(file) {
   }
 }
 
+// ---------- Cloud account, sync and friend ----------
+// Loaded lazily so the app still starts offline when the Supabase library
+// from the CDN is not available.
+let cloudModule = null;
+async function getCloud() {
+  if (!cloudModule) cloudModule = await import('./cloud.js');
+  return cloudModule;
+}
+
+let cloudBusy = false;
+let pushTimer = null;
+// Called after every local change; pushes a few seconds later in one batch.
+function markDirty() {
+  if (!state.cloud.user) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => cloudSync(), 6000);
+}
+
+async function initCloud() {
+  try {
+    const c = await getCloud();
+    state.cloud.user = await c.currentUser();
+    if (!state.cloud.user) return;
+    await loadFriendFromCache();
+    state.cloud.profile = await c.saveProfile(state.cloud.user);
+    cloudSync();
+  } catch (e) {
+    state.cloud.status = { error: navigator.onLine ? e.message : 'Offline, will sync later' };
+    drawCloudStatus();
+  }
+}
+
+async function cloudSync() {
+  if (cloudBusy || !state.cloud.user || state.mode !== 'spotify') return;
+  cloudBusy = true;
+  clearTimeout(pushTimer);
+  let changed = false;
+  try {
+    const c = await getCloud();
+    const uid = state.cloud.user.id;
+    state.cloud.status = { busy: 'Syncing…' };
+    drawCloudStatus();
+    await c.push(state, uid, (msg) => { state.cloud.status = { busy: msg }; drawCloudStatus(); });
+    // Changes from another device of mine.
+    const own = await c.pullOwn(state, uid);
+    if (own.add.length || own.remove.length) {
+      for (const t of own.add) state.rawTracks.set(t.id, t);
+      for (const id of own.remove) state.rawTracks.delete(id);
+      const { albums, artists } = spotify.deriveAlbumsAndArtists(state.rawTracks, { albums: state.rawAlbums, artists: state.rawArtists });
+      await db.putMany('tracks', own.add);
+      for (const id of own.remove) await db.delete('tracks', id);
+      await db.clear('albums'); await db.putMany('albums', [...albums.values()]);
+      await db.putMany('artists', [...artists.values()]);
+      state.rawAlbums = albums; state.rawArtists = artists;
+      changed = true;
+    }
+    if (own.recordsChanged) {
+      const [ratings, eloRows, sugs, brackets] = await Promise.all(['ratings', 'elo', 'suggestions', 'brackets'].map(s => db.all(s)));
+      Object.assign(state, { ratings: toMap(ratings), elo: toMap(eloRows), suggestions: toMap(sugs), bracket: brackets.sort((a, b) => b.updatedAt - a.updatedAt)[0] || null });
+      changed = true;
+    }
+    if (changed) applyVersions();
+    await refreshFriend();
+    state.cloud.status = { at: now() };
+  } catch (e) {
+    state.cloud.status = { error: navigator.onLine ? e.message : 'Offline, will sync later' };
+  } finally {
+    cloudBusy = false;
+    drawCloudStatus();
+    updateBadge();
+    // Re-render only screens that show synced data and hold no unsaved input.
+    if (/^#\/(rankings|friend|compare|duel$|settings)/.test(location.hash) || changed) route();
+  }
+}
+
+async function refreshFriend() {
+  const c = await getCloud();
+  const others = await c.otherProfiles(state.cloud.user.id);
+  state.cloud.others = others;
+  const chosen = await db.getMeta('friendId');
+  const profile = others.find(o => o.id === chosen) || others[0];
+  if (!profile) { state.cloud.friend = null; return; }
+  await db.setMeta('friendProfile', profile);
+  const cache = await c.pullFriend(profile.id, state);
+  await buildFriend(profile, cache);
+}
+
+async function loadFriendFromCache() {
+  const profile = await db.getMeta('friendProfile');
+  const cache = profile && await db.get('friend', profile.id);
+  if (cache) await buildFriend(profile, cache);
+}
+
+// The friend's library as a merged view with its own scoring.
+async function buildFriend(profile, cache) {
+  const c = await getCloud();
+  const raw = await c.friendRaw(cache, state);
+  const { albums } = spotify.deriveAlbumsAndArtists(raw.tracks, { albums: new Map(), artists: raw.artists });
+  const v = buildVersions(raw.tracks, albums, raw.artists, raw.overrides);
+  const fstate = { tracks: v.tracks, albums: v.albums, artists: v.artists, trackMembers: v.trackMembers, albumMembers: v.albumMembers, ratings: raw.ratings };
+  state.cloud.friend = { profile, view: v, state: fstate, scoring: createScoring(fstate), elo: raw.elo };
+}
+
+function drawCloudStatus() {
+  const el = $('#cloudStatus');
+  if (!el) return;
+  const s = state.cloud.status || {};
+  el.textContent = s.busy || (s.error ? `Sync problem: ${s.error}` : s.at ? `Synced ${new Date(s.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '');
+}
+
+function cloudCard() {
+  const u = state.cloud.user;
+  if (!u) {
+    return `<section class="card">
+      <h3>Friend and cloud</h3>
+      <p class="fine">Sign in to keep your ratings in the cloud, use them on several devices, and compare with your friend. Uses your Spotify account, no extra password.</p>
+      ${state.mode === 'spotify' ? '' : '<p class="fine">Connect Spotify and sync your library first.</p>'}
+      <button class="btn primary block" id="cloudIn" ${state.mode === 'spotify' ? '' : 'disabled'}>Sign in with Spotify</button>
+    </section>`;
+  }
+  const f = state.cloud.friend;
+  const others = state.cloud.others || [];
+  return `<section class="card">
+    <h3>Friend and cloud</h3>
+    <p class="status ok">Signed in as ${esc(state.cloud.profile?.display_name || u.email || 'you')}</p>
+    <p class="fine" id="cloudStatus"></p>
+    <p>${f ? `Friend: <b>${esc(f.profile.display_name)}</b> · ${plural(f.state.tracks.size, 'song')}` : 'No friend has signed in yet. Once they sign in to SpotScore, they appear here.'}</p>
+    ${others.length > 1 ? `<label class="field"><span>Compare with</span><select id="friendPick">${others.map(o => `<option value="${o.id}" ${f?.profile.id === o.id ? 'selected' : ''}>${esc(o.display_name)}</option>`).join('')}</select></label>` : ''}
+    <div class="row-actions"><button class="btn" id="cloudOut">Sign out</button><button class="btn primary" id="cloudNow">Sync now</button></div>
+    <button class="link" id="cloudDelete">Delete my cloud account and data</button>
+  </section>`;
+}
+
+function bindCloudCard() {
+  $('#cloudIn')?.addEventListener('click', async () => { try { await (await getCloud()).signIn(); } catch (e) { toast(`Sign-in failed: ${e.message}`, 5000); } });
+  $('#cloudNow')?.addEventListener('click', () => cloudSync());
+  $('#cloudOut')?.addEventListener('click', async () => {
+    await (await getCloud()).signOut();
+    Object.assign(state.cloud, { user: null, profile: null, friend: null, others: [], status: null });
+    toast('Signed out. Your ratings stay on this device.');
+    route();
+  });
+  $('#cloudDelete')?.addEventListener('click', async () => {
+    if (!confirm('Delete your SpotScore cloud account? Your ratings, likes and duel data in the cloud are removed, and your friend no longer sees them. Data on this device stays.')) return;
+    try {
+      await (await getCloud()).deleteAccount();
+      Object.assign(state.cloud, { user: null, profile: null, friend: null, others: [], status: null });
+      toast('Cloud account deleted.');
+      route();
+    } catch (e) { toast(`Delete failed: ${e.message}`, 5000); }
+  });
+  $('#friendPick')?.addEventListener('change', async (e) => { await db.setMeta('friendId', e.target.value); await db.setMeta('friendProfile', null); cloudSync(); });
+  drawCloudStatus();
+}
+
+const social = createSocial({
+  state, scoring, elo, view, $, $$, art, head, row, toast, setTitle, plural, num, getCloud, markDirty, shuffle, now,
+});
+
 // ---------- Global events ----------
 document.addEventListener('click', (e) => {
   const play = e.target.closest('[data-play]');
@@ -1089,6 +1281,8 @@ document.addEventListener('keydown', (e) => {
 $('#back').onclick = () => (history.length > 1 ? history.back() : (location.hash = '#/library'));
 window.addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', refreshPlayer);
+// Push pending changes when the app goes to the background; pull when it comes back.
+document.addEventListener('visibilitychange', () => { if (state.cloud.user) cloudSync(); });
 // Poll the player only while something is known to be playing, to save API quota.
 setInterval(() => { if (nowPlaying?.playing) refreshPlayer(); }, 30000);
 
@@ -1100,9 +1294,19 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catc
 // ---------- Boot ----------
 (async function boot() {
   try {
+    // Return from the cloud account sign-in (Spotify via Supabase).
+    let cloudReturn = false;
+    if (new URLSearchParams(location.search).has('sb')) {
+      try { cloudReturn = await (await getCloud()).handleAuthRedirect(); } catch (e) { toast(e.message, 6000); }
+    }
     const loggedIn = await spotify.handleRedirect();
     await loadState();
     updateBadge();
+    await initCloud();
+    if (cloudReturn && state.cloud.user) {
+      toast('Signed in. Syncing with the cloud…');
+      location.hash = '#/settings';
+    }
     if (loggedIn) {
       toast('Connected to Spotify. Starting library sync…');
       location.hash = '#/settings';

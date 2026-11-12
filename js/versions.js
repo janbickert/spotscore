@@ -30,7 +30,8 @@ export function normTitle(title) {
 }
 
 const mainArtist = (x) => x.artists?.[0]?.id || '';
-const songKey = (artistId, name) => `${artistId}|${normTitle(name)}`;
+export const songKey = (artistId, name) => `${artistId}|${normTitle(name)}`;
+export const albumKey = (album) => `${mainArtist(album)}|${normTitle(album.name)}`;
 
 // Builds the merged view. overrides.splitAlbums: album ids that stay separate.
 export function buildVersions(rawTracks, rawAlbums, rawArtists, overrides = {}) {
@@ -118,5 +119,18 @@ export function buildVersions(rawTracks, rawAlbums, rawArtists, overrides = {}) 
     return best && best.d <= SAME_SONG_MS ? best.id : null;
   };
 
-  return { tracks, albums, artists, trackAlias, albumAlias, trackMembers, albumMembers, resolvePlaying };
+  // Finds the library album for an album from elsewhere (e.g. the friend's
+  // library), matching any edition of it.
+  const albumIndex = new Map();
+  for (const al of albums.values()) for (const eid of al.editions) {
+    const e = rawAlbums.get(eid);
+    if (!split.has(eid)) albumIndex.set(albumKey(e), al.id);
+  }
+  const resolveAlbum = (album) => {
+    if (!album) return null;
+    if (albumAlias.has(album.id)) return albumAlias.get(album.id);
+    return albumIndex.get(albumKey(album)) || null;
+  };
+
+  return { tracks, albums, artists, trackAlias, albumAlias, trackMembers, albumMembers, resolvePlaying, resolveAlbum };
 }

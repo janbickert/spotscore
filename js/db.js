@@ -2,8 +2,12 @@
 // so a later cloud sync (phase 2) can merge without a migration.
 
 const DB_NAME = 'spotscore';
-const DB_VERSION = 1;
-export const STORES = ['tracks', 'albums', 'artists', 'ratings', 'elo', 'suggestions', 'brackets', 'meta'];
+const DB_VERSION = 2;
+// v2 adds 'catalog' (Spotify metadata fetched from the cloud for the friend's
+// songs) and 'friend' (cached copy of the friend's likes and ratings).
+export const STORES = ['tracks', 'albums', 'artists', 'ratings', 'elo', 'suggestions', 'brackets', 'meta', 'catalog', 'friend'];
+// Stores included in JSON backups (cloud caches are rebuilt from the cloud).
+export const BACKUP_STORES = ['tracks', 'albums', 'artists', 'ratings', 'elo', 'suggestions', 'brackets'];
 
 let dbPromise = null;
 

@@ -42,6 +42,7 @@ export async function login(clientId) {
 // Called on startup. Returns true if a login redirect was handled.
 export async function handleRedirect() {
   const params = new URLSearchParams(location.search);
+  if (params.has('sb')) return false; // return from the cloud account login, handled in cloud.js
   const code = params.get('code');
   const error = params.get('error');
   if (!code && !error) return false;

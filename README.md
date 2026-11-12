@@ -81,6 +81,18 @@ Remastered, deluxe, expanded, regional and other editions of an album count as o
 - The mini player rates the liked version of the playing song, also when Spotify plays a different version.
 - On the 2026-11-06 library: 3,535 albums became 3,362, and 4,809 songs became 4,676.
 
+## Cloud sync and friend features (`js/cloud.js`, `js/social.js`, `supabase/schema.sql`)
+
+Supabase project `spotscore` (free plan, region eu-west-1). Sign-in is "Log in with Spotify" through Supabase Auth; email sign-up and email confirmation are switched off, so only accounts on the Spotify app's allowlist (Development Mode, max 5) can sign in.
+
+- The app stays offline-first: IndexedDB is the working copy. Changes are pushed a few seconds after they happen and when the app goes to the background; changes from other devices and the friend's data are pulled on start and after each push. The newer version of a record wins (server trigger).
+- Shared catalog of Spotify metadata (songs, albums, artists with genres); genres fetched by either user are reused by the other.
+- Each user writes only their own likes and records; both users can read each other's (row level security).
+- Friend features: friend's rating next to yours (song, album, artist pages), friend's rankings, Compare (taste match, biggest disagreements), shared brackets (both vote; disagreement goes to the higher average rating, then the higher seed).
+- Settings: sign in, sync now, sign out, delete my cloud account (removes all own cloud data).
+- Supabase free plan: the project pauses after one week without use (restore in the dashboard) and has no automatic backups; every device keeps a full local copy and Export still works.
+- To invite a friend: add their Spotify account under User Management in the Spotify developer dashboard, then they open the app, connect Spotify, sync, and sign in under Settings.
+
 ## Spotify Design & Branding Guidelines
 
 Checked against developer.spotify.com/documentation/design on 2026-11-06:
